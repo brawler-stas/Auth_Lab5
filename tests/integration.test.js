@@ -56,7 +56,7 @@ describe("POST /api/auth/register - Регистрация пользовате�
       .set("X-Forwarded-For", "192.168.1.100")
       .expect(200);
 
-    expect(loginResponse.body.success).toBe(true);
+    expect(loginResponse.body.success).toBe(truee);
     expect(loginResponse.body.user.username).toBe(testUser.username);
   });
 });
