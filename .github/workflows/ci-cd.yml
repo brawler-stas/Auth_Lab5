@@ -97,7 +97,7 @@ jobs:
       - name: 🏗️ Trigger Staging Deployment
         if: success()
         run: |
-          curl -X POST ${{ secrets.RENDER_HOOK_DEV }}
+          curl -X POST ${{ secrets.STAGE_DEPLOY_HOOK }}
 
   integration-test:
     name: 🧪 Integration Test
@@ -176,3 +176,14 @@ jobs:
           npm start &
           echo "Production server starting..."
           sleep 10
+
+      - name: ✅ Trigger Production Deployment Webhook
+        if: success()
+        run: |
+          echo "Triggering production deployment..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.PRODUCT_DEPLOY_TOKEN }}" \
+            ${{ secrets.PROD_DEPLOY_HOOK }}
+          
+          echo "Production deployment triggered successfully!"
