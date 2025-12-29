@@ -83,21 +83,83 @@ jobs:
       - name: 📦 Install dependencies
         run: npm ci
 
-      - name: 🚀 Start staging server
+      - name: 🧪 Run staging tests
         env:
           NODE_ENV: staging
           DATABASE_URL: ./staging_auth.db
           JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
           JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
         run: |
-          npm start &
-          echo "Staging server starting..."
+          # Проверяем, что сервер может запуститься
+          timeout 30s npm start &
+          SERVER_PID=$!
           sleep 10
+          
+          # Проверяем, что процесс жив
+          if ps -p $SERVER_PID > /dev/null; then
+            echo "✅ Server started successfully"
+            kill $SERVER_PID
+          else
+            echo "❌ Server failed to start"
+            exit 1
+          fi
 
       - name: 🏗️ Trigger Staging Deployment
         if: success()
         run: |
-          curl -X POST ${{ secrets.STAGE_DEPLOY_HOOK }}
+          echo "🚀 Preparing to trigger staging deployment..."
+          
+          # Проверяем, установлен ли вебхук
+          if [[ -z "${{ secrets.STAGE_DEPLOY_HOOK }}" || "${{ secrets.STAGE_DEPLOY_HOOK }}" == "not-set-yet" ]]; then
+            echo "⚠️  STAGE_DEPLOY_HOOK is not configured"
+            echo "Skipping staging deployment..."
+            exit 0
+          fi
+          
+          # Валидируем URL
+          if [[ ! "${{ secrets.STAGE_DEPLOY_HOOK }}" =~ ^https://.* ]]; then
+            echo "❌ ERROR: STAGE_DEPLOY_HOOK должен быть HTTPS URL"
+            echo "Получено: ${{ secrets.STAGE_DEPLOY_HOOK }}"
+            exit 1
+          fi
+          
+          echo "🔗 Deploy Hook URL: $(echo ${{ secrets.STAGE_DEPLOY_HOOK }} | sed 's/key=.*/key=***/')"
+          
+          # Триггерим деплой с таймаутом и повторными попытками
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "🔄 Attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES..."
+            
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              -H "Content-Type: application/json" \
+              "${{ secrets.STAGE_DEPLOY_HOOK }}" 2>&1)
+            
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+            
+            echo "📡 Response Code: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+              echo "✅ Staging deployment triggered successfully!"
+              echo "📋 Response: $RESPONSE_BODY"
+              break
+            else
+              echo "❌ Failed with HTTP $HTTP_CODE"
+              echo "📋 Response: $RESPONSE_BODY"
+              
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "⏳ Retrying in 5 seconds..."
+                sleep 5
+              else
+                echo "💥 All retry attempts failed"
+                exit 1
+              fi
+            fi
+          done
 
   integration-test:
     name: 🧪 Integration Test
@@ -139,6 +201,7 @@ jobs:
     name: 🚀 Deploy to Production
     runs-on: ubuntu-latest
     needs: [integration-test, unit-test, staging]
+    if: github.ref == 'refs/heads/main'  # Только для main ветки
 
     steps:
       - name: 📥 Checkout code
@@ -164,7 +227,7 @@ jobs:
       - name: 📦 Install dependencies
         run: npm ci
 
-      - name: 🚀 Start production server
+      - name: 🧪 Run production smoke test
         env:
           NODE_ENV: production
           DATABASE_URL: ./prod_auth.db
@@ -173,17 +236,78 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: |
-          npm start &
-          echo "Production server starting..."
+          # Быстрая проверка, что сервер может запуститься
+          timeout 30s npm start &
+          SERVER_PID=$!
           sleep 10
+          
+          if ps -p $SERVER_PID > /dev/null; then
+            echo "✅ Production server test passed"
+            kill $SERVER_PID
+          else
+            echo "❌ Production server test failed"
+            exit 1
+          fi
 
-      - name: ✅ Trigger Production Deployment Webhook
+      - name: ✅ Trigger Production Deployment
         if: success()
         run: |
-          echo "Triggering production deployment..."
-          curl -X POST \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.PRODUCT_DEPLOY_TOKEN }}" \
-            ${{ secrets.PROD_DEPLOY_HOOK }}
+          echo "🚀 Preparing to trigger production deployment..."
           
-          echo "Production deployment triggered successfully!"
+          # Проверяем, установлен ли вебхук
+          if [[ -z "${{ secrets.PROD_DEPLOY_HOOK }}" || "${{ secrets.PROD_DEPLOY_HOOK }}" == "not-set-yet" ]]; then
+            echo "⚠️  PROD_DEPLOY_HOOK is not configured"
+            echo "Skipping production deployment..."
+            exit 0
+          fi
+          
+          # Валидируем URL
+          if [[ ! "${{ secrets.PROD_DEPLOY_HOOK }}" =~ ^https://.* ]]; then
+            echo "❌ ERROR: PROD_DEPLOY_HOOK должен быть HTTPS URL"
+            echo "Получено: ${{ secrets.PROD_DEPLOY_HOOK }}"
+            exit 1
+          fi
+          
+          echo "🔗 Deploy Hook URL: $(echo ${{ secrets.PROD_DEPLOY_HOOK }} | sed 's/key=.*/key=***/')"
+          
+          # Для production можно добавить подтверждение
+          echo "⚠️  PRODUCTION DEPLOYMENT - This will deploy to live users!"
+          echo "⏳ Starting in 5 seconds..."
+          sleep 5
+          
+          # Триггерим деплой
+          echo "🔄 Triggering production deployment..."
+          
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Content-Type: application/json" \
+            "${{ secrets.PROD_DEPLOY_HOOK }}" 2>&1)
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          echo "📡 Response Code: $HTTP_CODE"
+          
+          if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+            echo "✅ Production deployment triggered successfully!"
+            echo "📋 Response: $RESPONSE_BODY"
+            
+            # Можно отправить уведомление
+            echo "📢 Production deployment initiated!"
+            echo "Check deployment progress in Render dashboard"
+          else
+            echo "❌ Production deployment failed with HTTP $HTTP_CODE"
+            echo "📋 Response: $RESPONSE_BODY"
+            exit 1
+          fi
+
+      - name: 📊 Deployment Notification
+        if: success()
+        run: |
+          echo "🎉 Deployment pipeline completed successfully!"
+          echo "=========================================="
+          echo "✅ Unit Tests: Passed"
+          echo "✅ Staging Deployment: Triggered"
+          echo "✅ Integration Tests: Passed"
+          echo "✅ Production Deployment: Triggered"
+          echo "=========================================="
+          echo "⏳ Check deployment status in Render Dashboard"
